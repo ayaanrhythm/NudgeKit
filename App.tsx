@@ -21,27 +21,39 @@ import {
   storageKind,
 } from "./storage";
 
+/* ---------------- constants ---------------- */
+
+const BASELINE_WINDOW_DAYS = 7;
+const DRIFT_THRESHOLD_MIN = 90; // 90+ min away from baseline = high risk
+
 /* ---------------- UI helpers ---------------- */
 
 const H = (props: { children: React.ReactNode }) => (
-  <Text style={{ color: "white", fontSize: 36, fontWeight: "800", marginBottom: 8 }}>
+  <Text
+    style={{
+      color: "white",
+      fontSize: 32,
+      fontWeight: "800",
+      marginBottom: 8,
+    }}
+  >
     {props.children}
   </Text>
 );
 
 const LinkButton: React.FC<{
   title: string;
-  onPress: () => void;
+  onPress: () => void | Promise<void>;
   tone?: "primary" | "danger";
 }> = ({ title, onPress, tone = "primary" }) => (
   <TouchableOpacity
-    onPress={onPress}
+    onPress={() => void onPress()}
     activeOpacity={0.8}
-    style={{ marginRight: 18, marginBottom: 22 }}
+    style={{ marginRight: 18, marginBottom: 16 }}
   >
     <Text
       style={{
-        fontSize: 28,
+        fontSize: 18,
         fontWeight: "700",
         color: tone === "danger" ? "#ff7a7a" : "#66a8ff",
       }}
@@ -62,6 +74,7 @@ const Card: React.FC<{ children: React.ReactNode; pad?: boolean }> = ({
       padding: pad ? 16 : 0,
       borderWidth: 1,
       borderColor: "rgba(255,255,255,0.06)",
+      marginBottom: 16,
     }}
   >
     {children}
@@ -70,13 +83,12 @@ const Card: React.FC<{ children: React.ReactNode; pad?: boolean }> = ({
 
 /* ---------------- notifications ---------------- */
 
-// Make notifications visible while app is foregrounded (for testing)
+// Show notifications while app is foregrounded (for testing)
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
     shouldShowAlert: true,
     shouldPlaySound: false,
     shouldSetBadge: false,
-    // new fields on recent SDKs
     shouldShowBanner: true,
     shouldShowList: true,
   }),
@@ -86,6 +98,7 @@ Notifications.setNotificationHandler({
 
 const toMinutes = (d: Date) => Math.floor(d.getTime() / 60000);
 const fromISO = (s: string) => new Date(s);
+
 const fmtHM = (m: number | null) => {
   if (m == null) return "n/a";
   const h24 = Math.floor((m / 60) % 24);
@@ -94,6 +107,14 @@ const fmtHM = (m: number | null) => {
   const h = ((h24 + 11) % 12) + 1;
   return `${h}:${mm.toString().padStart(2, "0")} ${ampm}`;
 };
+
+const fmtDate = (iso: string) => new Date(iso).toLocaleDateString();
+
+const fmtClock = (iso: string) =>
+  new Date(iso).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 
 function derive(n: Night): DerivedNight {
   const start = fromISO(n.sleep_start);
@@ -106,27 +127,33 @@ function derive(n: Night): DerivedNight {
 }
 
 function summarize(derived: DerivedNight[]) {
-  const last7 = derived.slice(0, 7);
-  const coverage = last7.length;
+  const lastN = derived.slice(0, BASELINE_WINDOW_DAYS);
+  const coverage = lastN.length;
+
   const baselineMid =
     coverage > 0
-      ? Math.floor(last7.reduce((s, d) => s + d.midsleep_min_epoch, 0) / coverage)
+      ? Math.floor(
+          lastN.reduce((s, d) => s + d.midsleep_min_epoch, 0) / coverage
+        )
       : null;
 
-  const last = last7[0];
+  const last = lastN[0];
   const recentLateness =
     baselineMid != null && last ? last.midsleep_min_epoch - baselineMid : 0;
 
   const regularityLoss =
     coverage > 1
-      ? last7
+      ? lastN
           .map((d) =>
-            Math.abs(d.midsleep_min_epoch - (baselineMid ?? d.midsleep_min_epoch))
+            Math.abs(
+              d.midsleep_min_epoch - (baselineMid ?? d.midsleep_min_epoch)
+            )
           )
           .reduce((a, b) => a + b, 0)
       : 0;
 
-  const drift = Math.abs(recentLateness) >= 90; // 90+ min away from baseline
+  const drift =
+    baselineMid != null && Math.abs(recentLateness) >= DRIFT_THRESHOLD_MIN;
 
   return {
     coverage,
@@ -138,8 +165,11 @@ function summarize(derived: DerivedNight[]) {
 }
 
 /* ---------------- CSV import helpers ---------------- */
+/* CSV expected header (any order):
+   date,sleep_start,sleep_end
+   where sleep_start and sleep_end are ISO timestamps.
+*/
 
-// Expected header: date,sleep_start,sleep_end
 function parseCsvToNights(csv: string): Night[] {
   const lines = csv
     .split(/\r?\n/)
@@ -160,7 +190,7 @@ function parseCsvToNights(csv: string): Night[] {
 
   if (idxDate === -1 || idxStart === -1 || idxEnd === -1) {
     throw new Error(
-      "CSV must have header: date,sleep_start,sleep_end (in any order)."
+      "CSV must have columns: date,sleep_start,sleep_end (any order)."
     );
   }
 
@@ -176,10 +206,7 @@ function parseCsvToNights(csv: string): Night[] {
     const sleep_start = parts[idxStart]?.trim();
     const sleep_end = parts[idxEnd]?.trim();
 
-    if (!date || !sleep_start || !sleep_end) {
-      // skip incomplete rows
-      continue;
-    }
+    if (!date || !sleep_start || !sleep_end) continue;
 
     nights.push({ date, sleep_start, sleep_end });
   }
@@ -187,15 +214,14 @@ function parseCsvToNights(csv: string): Night[] {
   if (nights.length === 0) {
     throw new Error("No valid rows found in CSV.");
   }
-
   return nights;
 }
 
-/* ---------------- fake data ---------------- */
+/* ---------------- fake data helpers ---------------- */
 
 function makeFake(
   dayOffset: number,
-  baseHM = { h: 0, m: 30 },
+  baseHM = { h: 4, m: 30 },
   driftMin = 0
 ): Night {
   const today = new Date();
@@ -215,15 +241,32 @@ function makeFake(
   };
 }
 
+// Create a synthetic night centered on a given midsleep with offset
+function nightFromMidsleep(
+  midsleepMinEpoch: number,
+  offsetMinutes: number
+): Night {
+  const midsleep = new Date((midsleepMinEpoch + offsetMinutes) * 60000);
+  const start = new Date(midsleep.getTime() - 4 * 60 * 60000);
+  const end = new Date(midsleep.getTime() + 4 * 60 * 60000);
+  const date = start.toISOString().slice(0, 10);
+  return {
+    date,
+    sleep_start: start.toISOString(),
+    sleep_end: end.toISOString(),
+  };
+}
+
 /* ---------------- App ---------------- */
 
 export default function App() {
-  const [perm, setPerm] = React.useState<
-    "granted" | "denied" | "undetermined"
-  >("undetermined");
+  const [perm, setPerm] =
+    React.useState<"granted" | "denied" | "undetermined">(
+      "undetermined"
+    );
   const [nights, setNights] = React.useState<Night[]>([]);
 
-  // nice background (no extra deps)
+  // simple gradient-ish background
   const Bg = () => (
     <>
       <View
@@ -265,14 +308,29 @@ export default function App() {
           importance: Notifications.AndroidImportance.DEFAULT,
         });
       }
-      refresh();
+      await refresh();
     })();
   }, []);
 
-  const derived = nights
+  const derived: DerivedNight[] = nights
     .map(derive)
-    .sort((a, b) => (a.date < b.date ? 1 : -1));
+    .sort((a, b) => (a.sleep_start < b.sleep_start ? 1 : -1)); // most recent first
+
   const stats = summarize(derived);
+
+  const riskLabel =
+    stats.coverage < 3
+      ? "Insufficient data (need ≥ 3 nights)"
+      : stats.drift
+      ? "HIGH (nudge would fire)"
+      : "LOW";
+
+  const riskColor =
+    stats.coverage < 3
+      ? "#e5e7eb"
+      : stats.drift
+      ? "#ff7a7a"
+      : "#4ade80";
 
   /* ----- actions ----- */
 
@@ -303,13 +361,11 @@ export default function App() {
   const importCsv = async () => {
     try {
       const res = await DocumentPicker.getDocumentAsync({
-        type: "text/csv" as any,
+        type: "text/csv",
         copyToCacheDirectory: true,
       });
 
-      if (res.canceled) {
-        return;
-      }
+      if (res.canceled) return;
 
       const asset = res.assets && res.assets[0];
       if (!asset || !asset.uri) {
@@ -317,10 +373,7 @@ export default function App() {
         return;
       }
 
-      const csv = await FileSystem.readAsStringAsync(asset.uri, {
-        encoding: "utf8",
-      });
-
+      const csv = await FileSystem.readAsStringAsync(asset.uri);
       const nightsFromCsv = parseCsvToNights(csv);
       await writeNightsRaw(nightsFromCsv);
       await refresh();
@@ -338,24 +391,77 @@ export default function App() {
     }
   };
 
+  const appendNight = async (night: Night) => {
+    const updated = [...nights, night];
+    await writeNightsRaw(updated);
+    await refresh();
+  };
+
+  const logOnTrackNight = async () => {
+    const mid =
+      stats.baselineMid ??
+      toMinutes(new Date()) + 4 * 60;
+    const night = nightFromMidsleep(mid, 0);
+    await appendNight(night);
+  };
+
+  const logLateNight = async () => {
+    const mid =
+      stats.baselineMid ??
+      toMinutes(new Date()) + 4 * 60;
+    const night = nightFromMidsleep(mid, 120); // 2 hours later
+    await appendNight(night);
+  };
+
   const fireNudgeNow = React.useCallback(async () => {
+    if (stats.coverage < 3) {
+      Alert.alert(
+        "Not enough data",
+        "We need at least 3 recent nights to decide whether to fire a nudge."
+      );
+      return;
+    }
+    if (Platform.OS === "web") {
+      Alert.alert(
+        "Notifications not available on web",
+        "On phones this would appear as a push notification. Here we just show the content in the UI."
+      );
+      return;
+    }
     const why = stats.drift ? "Bedtime drift detected" : "No drift tonight";
     await Notifications.scheduleNotificationAsync({
       content: {
         title: stats.drift ? "Heads up" : "No drift tonight",
-        body: `${why}. Baseline ${fmtHM(stats.baselineMid)}`,
+        body: `${why}. Baseline ${fmtHM(stats.baselineMid)}.`,
       },
       trigger: null, // immediate
     });
   }, [stats]);
 
   const scheduleTonight = React.useCallback(async () => {
-    // schedule 60s from now, or customize here
+    if (stats.coverage < 3) {
+      Alert.alert(
+        "Not enough data",
+        "We need at least 3 recent nights before scheduling a bedtime nudge."
+      );
+      return;
+    }
+    if (Platform.OS === "web") {
+      Alert.alert(
+        "Notifications not available on web",
+        "For the real study this nudge would be scheduled on a phone."
+      );
+      return;
+    }
+
+    // fire ~60 seconds from now for demo
     const target = new Date(Date.now() + 60 * 1000);
+
     const trigger: Notifications.DateTriggerInput = {
       type: Notifications.SchedulableTriggerInputTypes.DATE,
       date: target,
     };
+
     await Notifications.scheduleNotificationAsync({
       content: {
         title: stats.drift ? "Bedtime nudge" : "No drift tonight",
@@ -365,6 +471,7 @@ export default function App() {
       },
       trigger,
     });
+
     Alert.alert(
       "Scheduled",
       `Nudge set for ${target.toLocaleTimeString([], {
@@ -383,67 +490,222 @@ export default function App() {
         contentContainerStyle={{ padding: 20, paddingBottom: 40 }}
         style={{ flex: 1 }}
       >
-        <H>
-          Sleep Regularity{"\n"}Nudge
-        </H>
+        <H>Sleep Regularity{"\n"}Nudge Kit</H>
+
+        <Text style={{ color: "#cbd5e1", marginBottom: 6 }}>
+          We use your last {BASELINE_WINDOW_DAYS} nights to compute a personal
+          baseline midsleep. If tonight drifts more than{" "}
+          {DRIFT_THRESHOLD_MIN} minutes from that baseline, we flag risk as HIGH
+          and trigger a bedtime nudge.
+        </Text>
 
         <Text style={{ color: "#cbd5e1", marginBottom: 16 }}>
           Notification permission:{" "}
-          <Text style={{ fontWeight: "700", color: "#e5e7eb" }}>{perm}</Text>{" "}
+          <Text style={{ fontWeight: "700", color: "#e5e7eb" }}>
+            {perm}
+          </Text>{" "}
           • Storage:{" "}
           <Text style={{ fontWeight: "700", color: "#e5e7eb" }}>
             {storageKind()}
           </Text>
         </Text>
 
-        <View style={{ flexDirection: "row", flexWrap: "wrap", marginBottom: 8 }}>
+        <View
+          style={{
+            flexDirection: "row",
+            flexWrap: "wrap",
+            marginBottom: 4,
+          }}
+        >
           <LinkButton title="Import CSV" onPress={importCsv} />
           <LinkButton title="Seed 7 fake nights" onPress={seed7} />
+          <LinkButton title="Log on track night" onPress={logOnTrackNight} />
+          <LinkButton title="Log late night" onPress={logLateNight} />
           <LinkButton title="Refresh" onPress={refresh} />
         </View>
-        <View style={{ flexDirection: "row", flexWrap: "wrap", marginBottom: 10 }}>
-          <LinkButton title="Clear data" onPress={clear} tone="danger" />
+        <View
+          style={{
+            flexDirection: "row",
+            flexWrap: "wrap",
+            marginBottom: 10,
+          }}
+        >
+          <LinkButton
+            title="Clear data"
+            onPress={clear}
+            tone="danger"
+          />
         </View>
 
         <Card>
           <Text
             style={{
               color: "white",
-              fontSize: 22,
+              fontSize: 20,
               fontWeight: "800",
               marginBottom: 8,
             }}
           >
-            Coverage last 7 days: {stats.coverage}/7
+            Coverage last {BASELINE_WINDOW_DAYS} days:{" "}
+            {stats.coverage}/{BASELINE_WINDOW_DAYS}
           </Text>
-          <Text style={{ color: "white", fontSize: 18, marginBottom: 4 }}>
+          <Text
+            style={{ color: "white", fontSize: 16, marginBottom: 4 }}
+          >
             Baseline midsleep:{" "}
-            <Text style={{ fontWeight: "700" }}>{fmtHM(stats.baselineMid)}</Text>
+            <Text style={{ fontWeight: "700" }}>
+              {fmtHM(stats.baselineMid)}
+            </Text>
           </Text>
-          <Text style={{ color: "white", fontSize: 18, marginBottom: 4 }}>
-            Recent lateness: ~{Math.abs(stats.recentLateness)} min
+          <Text
+            style={{ color: "white", fontSize: 16, marginBottom: 4 }}
+          >
+            Recent lateness (last night vs baseline): ~
+            {Math.abs(stats.recentLateness)} min
           </Text>
-          <Text style={{ color: "white", fontSize: 18, marginBottom: 14 }}>
-            Regularity loss: ~{Math.abs(stats.regularityLoss)} min
+          <Text
+            style={{ color: "white", fontSize: 16, marginBottom: 14 }}
+          >
+            Regularity loss (sum deviation over window): ~
+            {Math.abs(stats.regularityLoss)} min
           </Text>
 
           <Text
             style={{
-              color: "white",
-              fontSize: 20,
+              color: riskColor,
+              fontSize: 18,
               fontWeight: "800",
               marginBottom: 12,
             }}
           >
-            Tonight risk: {stats.drift ? "HIGH (nudge would fire)" : "LOW"}
+            Tonight risk: {riskLabel}
           </Text>
 
           <View style={{ marginBottom: 8 }}>
-            <LinkButton title="Show nudge now (with why)" onPress={fireNudgeNow} />
+            <LinkButton
+              title="Show nudge now (with why)"
+              onPress={fireNudgeNow}
+            />
           </View>
           <View style={{ marginBottom: 4 }}>
-            <LinkButton title="Schedule tonight (+60s)" onPress={scheduleTonight} />
+            <LinkButton
+              title="Schedule tonight (+60s)"
+              onPress={scheduleTonight}
+            />
           </View>
+        </Card>
+
+        {/* ---- history card ---- */}
+        <Card pad={false}>
+          <View style={{ padding: 16 }}>
+            <Text
+              style={{
+                color: "white",
+                fontSize: 18,
+                fontWeight: "800",
+                marginBottom: 8,
+              }}
+            >
+              Recent nights
+            </Text>
+            <Text
+              style={{ color: "#cbd5e1", marginBottom: 8, fontSize: 14 }}
+            >
+              Most recent at the top. Nights in the last{" "}
+              {BASELINE_WINDOW_DAYS} days form the baseline window.
+            </Text>
+          </View>
+
+          {derived.length === 0 ? (
+            <View
+              style={{ paddingHorizontal: 16, paddingBottom: 16 }}
+            >
+              <Text style={{ color: "#cbd5e1" }}>
+                No nights yet. Import a CSV, seed fake data, or log a
+                night to see history.
+              </Text>
+            </View>
+          ) : (
+            derived.slice(0, 21).map((n, idx) => {
+              const isInBaseline = idx < BASELINE_WINDOW_DAYS;
+              const lateVsBaseline =
+                stats.baselineMid == null
+                  ? false
+                  : Math.abs(
+                      n.midsleep_min_epoch - stats.baselineMid
+                    ) >= DRIFT_THRESHOLD_MIN;
+
+              const label =
+                stats.baselineMid == null
+                  ? "n/a"
+                  : lateVsBaseline
+                  ? "Late vs baseline"
+                  : "On track";
+
+              const color =
+                stats.baselineMid == null
+                  ? "#e5e7eb"
+                  : lateVsBaseline
+                  ? "#ff7a7a"
+                  : "#4ade80";
+
+              return (
+                <View
+                  key={n.date + n.sleep_start}
+                  style={{
+                    paddingHorizontal: 16,
+                    paddingVertical: 10,
+                    borderTopWidth: 1,
+                    borderTopColor: "rgba(255,255,255,0.06)",
+                    flexDirection: "row",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                  }}
+                >
+                  <View>
+                    <Text
+                      style={{
+                        color: "white",
+                        fontWeight: "700",
+                      }}
+                    >
+                      {fmtDate(n.sleep_start)}
+                    </Text>
+                    <Text
+                      style={{
+                        color: "#cbd5e1",
+                        fontSize: 13,
+                      }}
+                    >
+                      Bed {fmtClock(n.sleep_start)} · Wake{" "}
+                      {fmtClock(n.sleep_end)}
+                    </Text>
+                  </View>
+                  <View style={{ alignItems: "flex-end" }}>
+                    <Text
+                      style={{
+                        color,
+                        fontWeight: "700",
+                        fontSize: 14,
+                      }}
+                    >
+                      {label}
+                    </Text>
+                    {isInBaseline && (
+                      <Text
+                        style={{
+                          color: "#94a3b8",
+                          fontSize: 11,
+                        }}
+                      >
+                        In baseline window
+                      </Text>
+                    )}
+                  </View>
+                </View>
+              );
+            })
+          )}
         </Card>
       </ScrollView>
     </SafeAreaView>
