@@ -7,7 +7,9 @@ import {
   Text,
   TouchableOpacity,
   View,
+  Animated,
 } from "react-native";
+
 import * as Notifications from "expo-notifications";
 import * as DocumentPicker from "expo-document-picker";
 import * as FileSystem from "expo-file-system";
@@ -31,10 +33,11 @@ const DRIFT_THRESHOLD_MIN = 90; // 90+ min away from baseline = high risk
 const H = (props: { children: React.ReactNode }) => (
   <Text
     style={{
-      color: "white",
-      fontSize: 32,
+      color: "#e5e7eb",
+      fontSize: 30,
       fontWeight: "800",
-      marginBottom: 8,
+      marginBottom: 12,
+      letterSpacing: 0.5,
     }}
   >
     {props.children}
@@ -48,14 +51,32 @@ const LinkButton: React.FC<{
 }> = ({ title, onPress, tone = "primary" }) => (
   <TouchableOpacity
     onPress={() => void onPress()}
-    activeOpacity={0.8}
-    style={{ marginRight: 18, marginBottom: 16 }}
+    activeOpacity={0.85}
+    style={{
+      marginRight: 12,
+      marginBottom: 12,
+      paddingHorizontal: 16,
+      paddingVertical: 10,
+      borderRadius: 999,
+      backgroundColor:
+        tone === "danger" ? "rgba(248,113,113,0.18)" : "rgba(59,130,246,0.22)",
+      borderWidth: 1,
+      borderColor:
+        tone === "danger" ? "rgba(248,113,113,0.9)" : "rgba(59,130,246,0.9)",
+      shadowColor: "#000",
+      shadowOpacity: 0.45,
+      shadowRadius: 10,
+      shadowOffset: { width: 0, height: 4 },
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "center",
+    }}
   >
     <Text
       style={{
-        fontSize: 18,
+        fontSize: 15,
         fontWeight: "700",
-        color: tone === "danger" ? "#ff7a7a" : "#66a8ff",
+        color: "#e5e7eb",
       }}
     >
       {title}
@@ -69,12 +90,16 @@ const Card: React.FC<{ children: React.ReactNode; pad?: boolean }> = ({
 }) => (
   <View
     style={{
-      backgroundColor: "rgba(255,255,255,0.06)",
-      borderRadius: 18,
-      padding: pad ? 16 : 0,
+      backgroundColor: "rgba(15,23,42,0.9)",
+      borderRadius: 20,
+      padding: pad ? 18 : 0,
       borderWidth: 1,
-      borderColor: "rgba(255,255,255,0.06)",
-      marginBottom: 16,
+      borderColor: "rgba(148,163,184,0.3)",
+      marginBottom: 18,
+      shadowColor: "#000",
+      shadowOpacity: 0.55,
+      shadowRadius: 18,
+      shadowOffset: { width: 0, height: 12 },
     }}
   >
     {children}
@@ -267,36 +292,134 @@ export default function App() {
   const [nights, setNights] = React.useState<Night[]>([]);
 
   // simple gradient-ish background
-  const Bg = () => (
-    <>
-      <View
-        pointerEvents="none"
-        style={{
-          position: "absolute",
-          top: -120,
-          right: -80,
-          width: 320,
-          height: 320,
-          borderRadius: 160,
-          backgroundColor: "#15324d",
-          opacity: 0.6,
-        }}
-      />
-      <View
-        pointerEvents="none"
-        style={{
-          position: "absolute",
-          bottom: -160,
-          left: -120,
-          width: 420,
-          height: 420,
-          borderRadius: 210,
-          backgroundColor: "#1f2b5b",
-          opacity: 0.55,
-        }}
-      />
-    </>
-  );
+    // animated, subtle moving background
+  const Bg: React.FC = () => {
+    const animation = React.useRef(new Animated.Value(0)).current;
+
+    React.useEffect(() => {
+      animation.setValue(0);
+      Animated.loop(
+        Animated.timing(animation, {
+          toValue: 1,
+          duration: 18000,
+          useNativeDriver: true,
+        })
+      ).start();
+    }, [animation]);
+
+    const translateFast = animation.interpolate({
+      inputRange: [0, 1],
+      outputRange: [0, -200],
+    });
+
+    const translateSlow = animation.interpolate({
+      inputRange: [0, 1],
+      outputRange: [0, -120],
+    });
+
+    const baseLineStyle = {
+      position: "absolute" as const,
+      width: "220%",
+      height: 1,
+      backgroundColor: "rgba(248,250,252,0.12)",
+    } as const;
+
+    return (
+      <>
+        {/* soft colorful blobs */}
+        <View
+          pointerEvents="none"
+          style={{
+            position: "absolute",
+            top: -140,
+            right: -120,
+            width: 320,
+            height: 320,
+            borderRadius: 160,
+            backgroundColor: "#1d4ed8",
+            opacity: 0.45,
+          }}
+        />
+        <View
+          pointerEvents="none"
+          style={{
+            position: "absolute",
+            bottom: -160,
+            left: -120,
+            width: 360,
+            height: 360,
+            borderRadius: 180,
+            backgroundColor: "#22c55e",
+            opacity: 0.35,
+          }}
+        />
+        <View
+          pointerEvents="none"
+          style={{
+            position: "absolute",
+            bottom: 80,
+            right: -60,
+            width: 260,
+            height: 260,
+            borderRadius: 130,
+            backgroundColor: "#6366f1",
+            opacity: 0.35,
+          }}
+        />
+
+        {/* animated white lines */}
+        <Animated.View
+          pointerEvents="none"
+          style={[
+            baseLineStyle,
+            {
+              top: 100,
+              left: -80,
+              opacity: 0.35,
+              transform: [{ translateX: translateFast }, { rotate: "-16deg" }],
+            },
+          ]}
+        />
+        <Animated.View
+          pointerEvents="none"
+          style={[
+            baseLineStyle,
+            {
+              top: 180,
+              left: -40,
+              opacity: 0.25,
+              transform: [{ translateX: translateSlow }, { rotate: "-12deg" }],
+            },
+          ]}
+        />
+        <Animated.View
+          pointerEvents="none"
+          style={[
+            baseLineStyle,
+            {
+              top: 260,
+              left: -100,
+              opacity: 0.18,
+              transform: [{ translateX: translateFast }, { rotate: "-20deg" }],
+            },
+          ]}
+        />
+        <Animated.View
+          pointerEvents="none"
+          style={[
+            baseLineStyle,
+            {
+              top: 340,
+              left: -60,
+              opacity: 0.22,
+              transform: [{ translateX: translateSlow }, { rotate: "-10deg" }],
+            },
+          ]}
+        />
+      </>
+    );
+  };
+
 
   React.useEffect(() => {
     (async () => {
@@ -490,7 +613,10 @@ export default function App() {
         contentContainerStyle={{ padding: 20, paddingBottom: 40 }}
         style={{ flex: 1 }}
       >
-        <H>Sleep Regularity{"\n"}Nudge Kit</H>
+        <H>
+          Sleep Regularity{"\n"}
+          <Text style={{ color: "#38bdf8" }}>Nudge Kit</Text>
+        </H>
 
         <Text style={{ color: "#cbd5e1", marginBottom: 6 }}>
           We use your last {BASELINE_WINDOW_DAYS} nights to compute a personal
