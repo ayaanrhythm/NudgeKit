@@ -9,10 +9,12 @@ import {
   View,
   Animated,
 } from "react-native";
-
+import Slider from "@react-native-community/slider";
+import { Ionicons } from "@expo/vector-icons";
 import * as Notifications from "expo-notifications";
 import * as DocumentPicker from "expo-document-picker";
 import * as FileSystem from "expo-file-system";
+import { Audio } from "expo-av";
 
 import {
   Night,
@@ -25,6 +27,7 @@ import {
 
 /* ---------------- constants ---------------- */
 
+const SOOTHING_TRACK = require("./assets/nudgekitbackgroundmusic.mp3");
 const BASELINE_WINDOW_DAYS = 7;
 const DRIFT_THRESHOLD_MIN = 90; // 90+ min away from baseline = high risk
 
@@ -108,14 +111,13 @@ const Card: React.FC<{ children: React.ReactNode; pad?: boolean }> = ({
 
 /* ---------------- notifications ---------------- */
 
-// Show notifications while app is foregrounded (for testing)
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
     shouldShowAlert: true,
     shouldPlaySound: false,
     shouldSetBadge: false,
-    shouldShowBanner: true,
-    shouldShowList: true,
+    shouldShowBanner: true as any,
+    shouldShowList: true as any,
   }),
 });
 
@@ -190,10 +192,6 @@ function summarize(derived: DerivedNight[]) {
 }
 
 /* ---------------- CSV import helpers ---------------- */
-/* CSV expected header (any order):
-   date,sleep_start,sleep_end
-   where sleep_start and sleep_end are ISO timestamps.
-*/
 
 function parseCsvToNights(csv: string): Night[] {
   const lines = csv
@@ -286,13 +284,88 @@ function nightFromMidsleep(
 
 export default function App() {
   const [perm, setPerm] =
-    React.useState<"granted" | "denied" | "undetermined">(
-      "undetermined"
-    );
+    React.useState<"granted" | "denied" | "undetermined">("undetermined");
   const [nights, setNights] = React.useState<Night[]>([]);
 
-  // simple gradient-ish background
-    // animated, subtle moving background
+  // settings + background music state
+  const [isSettingsOpen, setIsSettingsOpen] = React.useState(false);
+  const [isMusicOn, setIsMusicOn] = React.useState(true); // default ON
+  const [musicVolume, setMusicVolume] = React.useState(0.5);
+  const musicSoundRef = React.useRef<Audio.Sound | null>(null);
+
+  // load background music once, auto-play by default
+  React.useEffect(() => {
+    let isMounted = true;
+
+    const loadSound = async () => {
+      try {
+        await Audio.setAudioModeAsync({
+          playsInSilentModeIOS: true,
+          allowsRecordingIOS: false,
+          staysActiveInBackground: false,
+          shouldDuckAndroid: true,
+          playThroughEarpieceAndroid: false,
+        });
+
+        const { sound } = await Audio.Sound.createAsync(SOOTHING_TRACK, {
+          volume: musicVolume,
+          isLooping: true,
+        });
+
+        if (!isMounted) {
+          await sound.unloadAsync();
+          return;
+        }
+
+        musicSoundRef.current = sound;
+
+        // always try to play on mount
+        try {
+          await sound.playAsync();
+        } catch (err) {
+          // On web, this can fail due to autoplay policy.
+          console.warn("Autoplay failed (likely browser policy):", err);
+        }
+      } catch (e) {
+        console.warn("Error loading background sound", e);
+      }
+    };
+
+    loadSound();
+
+    return () => {
+      isMounted = false;
+      if (musicSoundRef.current) {
+        musicSoundRef.current.unloadAsync();
+        musicSoundRef.current = null;
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // react to mute / volume changes
+  React.useEffect(() => {
+    const sound = musicSoundRef.current;
+    if (!sound) return;
+
+    (async () => {
+      try {
+        await sound.setVolumeAsync(musicVolume);
+        const status = await sound.getStatusAsync();
+        if (!status.isLoaded) return;
+
+        if (isMusicOn && !status.isPlaying) {
+          await sound.playAsync();
+        } else if (!isMusicOn && status.isPlaying) {
+          await sound.pauseAsync();
+        }
+      } catch (e) {
+        console.warn("Error updating background sound", e);
+      }
+    })();
+  }, [isMusicOn, musicVolume]);
+
+  // animated, subtle moving background
   const Bg: React.FC = () => {
     const animation = React.useRef(new Animated.Value(0)).current;
 
@@ -420,7 +493,6 @@ export default function App() {
     );
   };
 
-
   React.useEffect(() => {
     (async () => {
       const { status } = await Notifications.requestPermissionsAsync();
@@ -521,17 +593,13 @@ export default function App() {
   };
 
   const logOnTrackNight = async () => {
-    const mid =
-      stats.baselineMid ??
-      toMinutes(new Date()) + 4 * 60;
+    const mid = stats.baselineMid ?? toMinutes(new Date()) + 4 * 60;
     const night = nightFromMidsleep(mid, 0);
     await appendNight(night);
   };
 
   const logLateNight = async () => {
-    const mid =
-      stats.baselineMid ??
-      toMinutes(new Date()) + 4 * 60;
+    const mid = stats.baselineMid ?? toMinutes(new Date()) + 4 * 60;
     const night = nightFromMidsleep(mid, 120); // 2 hours later
     await appendNight(night);
   };
@@ -557,7 +625,7 @@ export default function App() {
         title: stats.drift ? "Heads up" : "No drift tonight",
         body: `${why}. Baseline ${fmtHM(stats.baselineMid)}.`,
       },
-      trigger: null, // immediate
+      trigger: null,
     });
   }, [stats]);
 
@@ -577,7 +645,6 @@ export default function App() {
       return;
     }
 
-    // fire ~60 seconds from now for demo
     const target = new Date(Date.now() + 60 * 1000);
 
     const trigger: Notifications.DateTriggerInput = {
@@ -613,24 +680,52 @@ export default function App() {
         contentContainerStyle={{ padding: 20, paddingBottom: 40 }}
         style={{ flex: 1 }}
       >
-        <H>
-          Sleep Regularity{"\n"}
-          <Text style={{ color: "#38bdf8" }}>Nudge Kit</Text>
-        </H>
+        {/* Header with title + top-right settings icon */}
+        <View
+          style={{
+            flexDirection: "row",
+            justifyContent: "space-between",
+            alignItems: "flex-start",
+            marginBottom: 10,
+          }}
+        >
+          <View style={{ flex: 1, paddingRight: 12 }}>
+            <H>
+              Sleep Regularity{"\n"}
+              <Text style={{ color: "#38bdf8" }}>Nudge Kit</Text>
+            </H>
+          </View>
+
+          <View style={{ position: "relative", alignItems: "flex-end" }}>
+            <TouchableOpacity
+              onPress={() => setIsSettingsOpen((prev) => !prev)}
+              style={{
+                width: 36,
+                height: 36,
+                borderRadius: 18,
+                backgroundColor: "rgba(15,23,42,0.95)",
+                borderWidth: 1,
+                borderColor: "rgba(148,163,184,0.6)",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <Ionicons name="settings-outline" size={20} color="#9ca3af" />
+            </TouchableOpacity>
+          </View>
+        </View>
 
         <Text style={{ color: "#cbd5e1", marginBottom: 6 }}>
           We use your last {BASELINE_WINDOW_DAYS} nights to compute a personal
-          baseline midsleep. If tonight drifts more than{" "}
-          {DRIFT_THRESHOLD_MIN} minutes from that baseline, we flag risk as HIGH
-          and trigger a bedtime nudge.
+          baseline midsleep. If tonight drifts more than {DRIFT_THRESHOLD_MIN}{" "}
+          minutes from that baseline, we flag risk as HIGH and trigger a
+          bedtime nudge.
         </Text>
 
         <Text style={{ color: "#cbd5e1", marginBottom: 16 }}>
           Notification permission:{" "}
-          <Text style={{ fontWeight: "700", color: "#e5e7eb" }}>
-            {perm}
-          </Text>{" "}
-          • Storage:{" "}
+          <Text style={{ fontWeight: "700", color: "#e5e7eb" }}>{perm}</Text> •
+          Storage:{" "}
           <Text style={{ fontWeight: "700", color: "#e5e7eb" }}>
             {storageKind()}
           </Text>
@@ -656,11 +751,7 @@ export default function App() {
             marginBottom: 10,
           }}
         >
-          <LinkButton
-            title="Clear data"
-            onPress={clear}
-            tone="danger"
-          />
+          <LinkButton title="Clear data" onPress={clear} tone="danger" />
         </View>
 
         <Card>
@@ -675,23 +766,15 @@ export default function App() {
             Coverage last {BASELINE_WINDOW_DAYS} days:{" "}
             {stats.coverage}/{BASELINE_WINDOW_DAYS}
           </Text>
-          <Text
-            style={{ color: "white", fontSize: 16, marginBottom: 4 }}
-          >
+          <Text style={{ color: "white", fontSize: 16, marginBottom: 4 }}>
             Baseline midsleep:{" "}
-            <Text style={{ fontWeight: "700" }}>
-              {fmtHM(stats.baselineMid)}
-            </Text>
+            <Text style={{ fontWeight: "700" }}>{fmtHM(stats.baselineMid)}</Text>
           </Text>
-          <Text
-            style={{ color: "white", fontSize: 16, marginBottom: 4 }}
-          >
+          <Text style={{ color: "white", fontSize: 16, marginBottom: 4 }}>
             Recent lateness (last night vs baseline): ~
             {Math.abs(stats.recentLateness)} min
           </Text>
-          <Text
-            style={{ color: "white", fontSize: 16, marginBottom: 14 }}
-          >
+          <Text style={{ color: "white", fontSize: 16, marginBottom: 14 }}>
             Regularity loss (sum deviation over window): ~
             {Math.abs(stats.regularityLoss)} min
           </Text>
@@ -708,10 +791,7 @@ export default function App() {
           </Text>
 
           <View style={{ marginBottom: 8 }}>
-            <LinkButton
-              title="Show nudge now (with why)"
-              onPress={fireNudgeNow}
-            />
+            <LinkButton title="Show nudge now (with why)" onPress={fireNudgeNow} />
           </View>
           <View style={{ marginBottom: 4 }}>
             <LinkButton
@@ -734,21 +814,17 @@ export default function App() {
             >
               Recent nights
             </Text>
-            <Text
-              style={{ color: "#cbd5e1", marginBottom: 8, fontSize: 14 }}
-            >
-              Most recent at the top. Nights in the last{" "}
-              {BASELINE_WINDOW_DAYS} days form the baseline window.
+            <Text style={{ color: "#cbd5e1", marginBottom: 8, fontSize: 14 }}>
+              Most recent at the top. Nights in the last {BASELINE_WINDOW_DAYS}{" "}
+              days form the baseline window.
             </Text>
           </View>
 
           {derived.length === 0 ? (
-            <View
-              style={{ paddingHorizontal: 16, paddingBottom: 16 }}
-            >
+            <View style={{ paddingHorizontal: 16, paddingBottom: 16 }}>
               <Text style={{ color: "#cbd5e1" }}>
-                No nights yet. Import a CSV, seed fake data, or log a
-                night to see history.
+                No nights yet. Import a CSV, seed fake data, or log a night to
+                see history.
               </Text>
             </View>
           ) : (
@@ -834,6 +910,160 @@ export default function App() {
           )}
         </Card>
       </ScrollView>
+
+      {isSettingsOpen && (
+        <View
+          style={{
+            position: "absolute",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            zIndex: 50,
+          }}
+        >
+          {/* dim background that also closes on tap */}
+          <TouchableOpacity
+            activeOpacity={1}
+            onPress={() => setIsSettingsOpen(false)}
+            style={{
+              position: "absolute",
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              backgroundColor: "rgba(15,23,42,0.85)",
+            }}
+          />
+
+          {/* small window under the gear */}
+          <View
+            style={{
+              position: "absolute",
+              top: 70,
+              right: 20,
+              width: 280,
+              backgroundColor: "#020617",
+              borderRadius: 18,
+              padding: 14,
+              borderWidth: 1,
+              borderColor: "rgba(148,163,184,0.9)",
+              shadowColor: "#000",
+              shadowOpacity: 0.8,
+              shadowRadius: 20,
+              shadowOffset: { width: 0, height: 10 },
+            }}
+          >
+            {/* header row */}
+            <View
+              style={{
+                flexDirection: "row",
+                justifyContent: "space-between",
+                alignItems: "center",
+                marginBottom: 8,
+              }}
+            >
+              <Text
+                style={{
+                  color: "#e5e7eb",
+                  fontSize: 16,
+                  fontWeight: "700",
+                }}
+              >
+                Settings
+              </Text>
+              <TouchableOpacity
+                onPress={() => setIsSettingsOpen(false)}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <Ionicons name="close" size={18} color="#9ca3af" />
+              </TouchableOpacity>
+            </View>
+
+            <Text
+              style={{
+                color: "#e5e7eb",
+                fontSize: 14,
+                fontWeight: "600",
+                marginBottom: 4,
+              }}
+            >
+              Background music
+            </Text>
+            <Text
+              style={{
+                color: "#94a3b8",
+                fontSize: 12,
+                marginBottom: 10,
+              }}
+            >
+              Soothing audio plays by default. Adjust the volume or pause it
+              here.
+            </Text>
+
+            {/* Play / pause */}
+            <View
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                marginBottom: 10,
+              }}
+            >
+              <TouchableOpacity
+                onPress={() => setIsMusicOn((prev) => !prev)}
+                style={{
+                  paddingHorizontal: 14,
+                  paddingVertical: 6,
+                  borderRadius: 999,
+                  backgroundColor: isMusicOn
+                    ? "rgba(34,197,94,0.28)"
+                    : "rgba(148,163,184,0.35)",
+                  marginRight: 10,
+                }}
+              >
+                <Text
+                  style={{
+                    color: "#e5e7eb",
+                    fontSize: 13,
+                    fontWeight: "700",
+                  }}
+                >
+                  {isMusicOn ? "Pause" : "Play"}
+                </Text>
+              </TouchableOpacity>
+              <Text style={{ color: "#cbd5e1", fontSize: 12 }}>
+                {isMusicOn ? "Playing" : "Muted"}
+              </Text>
+            </View>
+
+            {/* Volume label + slider */}
+            <Text
+              style={{
+                color: "#e5e7eb",
+                fontSize: 13,
+                marginBottom: 6,
+                fontWeight: "600",
+              }}
+            >
+              Volume
+            </Text>
+
+            <Slider
+              style={{ width: "100%", height: 32 }}
+              minimumValue={0}
+              maximumValue={1}
+              value={musicVolume}
+              onValueChange={(value: number) => {
+                setMusicVolume(value);
+                setIsMusicOn(value > 0);
+              }}
+              minimumTrackTintColor="#38bdf8"
+              maximumTrackTintColor="#4b5563"
+              thumbTintColor="#e5e7eb"
+            />
+          </View>
+        </View>
+      )}
     </SafeAreaView>
   );
 }
