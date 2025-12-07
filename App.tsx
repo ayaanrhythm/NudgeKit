@@ -6,6 +6,7 @@ import {
   ScrollView,
   Text,
   TouchableOpacity,
+  TouchableWithoutFeedback,
   View,
   Animated,
 } from "react-native";
@@ -25,7 +26,156 @@ import {
   storageKind,
 } from "./storage";
 
-/* ---------------- constants ---------------- */
+/* ---------------- mood types / constants ---------------- */
+
+type MoodKey =
+  | "bright"
+  | "grateful"
+  | "proud"
+  | "excited"
+  | "focused"
+  | "calm"
+  | "relaxed"
+  | "okay"
+  | "tired"
+  | "drained"
+  | "sad"
+  | "anxious"
+  | "stressed"
+  | "lonely"
+  | "angry"
+  | "overwhelmed";
+
+type MoodEntry = {
+  id: string;
+  mood: MoodKey;
+  at: string; // ISO timestamp
+};
+
+type MoodMeta = {
+  key: MoodKey;
+  title: string;
+  subtitle: string;
+  color: string;
+  glow: string;
+};
+
+const MOODS: MoodMeta[] = [
+  {
+    key: "bright",
+    title: "Bright",
+    subtitle: "Energized · Uplifted",
+    color: "#facc15",
+    glow: "rgba(234,179,8,0.35)",
+  },
+  {
+    key: "grateful",
+    title: "Grateful",
+    subtitle: "Warm · Appreciative",
+    color: "#f97316",
+    glow: "rgba(249,115,22,0.35)",
+  },
+  {
+    key: "proud",
+    title: "Proud",
+    subtitle: "Accomplished · Strong",
+    color: "#fb7185",
+    glow: "rgba(248,113,113,0.35)",
+  },
+  {
+    key: "excited",
+    title: "Excited",
+    subtitle: "Buzzing · Anticipating",
+    color: "#a855f7",
+    glow: "rgba(168,85,247,0.35)",
+  },
+  {
+    key: "focused",
+    title: "Focused",
+    subtitle: "Clear · Engaged",
+    color: "#38bdf8",
+    glow: "rgba(56,189,248,0.35)",
+  },
+  {
+    key: "calm",
+    title: "Calm",
+    subtitle: "Steady · At ease",
+    color: "#4ade80",
+    glow: "rgba(74,222,128,0.35)",
+  },
+  {
+    key: "relaxed",
+    title: "Relaxed",
+    subtitle: "Unwinding · Soft",
+    color: "#22c55e",
+    glow: "rgba(34,197,94,0.35)",
+  },
+  {
+    key: "okay",
+    title: "Okay",
+    subtitle: "Neutral · Fine",
+    color: "#93c5fd",
+    glow: "rgba(147,197,253,0.35)",
+  },
+  {
+    key: "tired",
+    title: "Tired",
+    subtitle: "Sleepy · Worn out",
+    color: "#fbbf24",
+    glow: "rgba(251,191,36,0.3)",
+  },
+  {
+    key: "drained",
+    title: "Drained",
+    subtitle: "Low energy · Heavy",
+    color: "#60a5fa",
+    glow: "rgba(96,165,250,0.35)",
+  },
+  {
+    key: "sad",
+    title: "Sad",
+    subtitle: "Low · Blue",
+    color: "#6366f1",
+    glow: "rgba(99,102,241,0.35)",
+  },
+  {
+    key: "anxious",
+    title: "Anxious",
+    subtitle: "Jittery · Worried",
+    color: "#f97373",
+    glow: "rgba(248,113,113,0.4)",
+  },
+  {
+    key: "stressed",
+    title: "Stressed",
+    subtitle: "Under pressure",
+    color: "#f97316",
+    glow: "rgba(249,115,22,0.4)",
+  },
+  {
+    key: "lonely",
+    title: "Lonely",
+    subtitle: "Disconnected",
+    color: "#a5b4fc",
+    glow: "rgba(165,180,252,0.4)",
+  },
+  {
+    key: "angry",
+    title: "Angry",
+    subtitle: "Irritated · Upset",
+    color: "#ef4444",
+    glow: "rgba(239,68,68,0.4)",
+  },
+  {
+    key: "overwhelmed",
+    title: "Overwhelmed",
+    subtitle: "Too much at once",
+    color: "#f97316",
+    glow: "rgba(249,115,22,0.45)",
+  },
+];
+
+/* ---------------- sleep constants ---------------- */
 
 const SOOTHING_TRACK = require("./assets/nudgekitbackgroundmusic.mp3");
 const BASELINE_WINDOW_DAYS = 7;
@@ -41,6 +191,7 @@ const H = (props: { children: React.ReactNode }) => (
       fontWeight: "800",
       marginBottom: 12,
       letterSpacing: 0.5,
+      textAlign: "center",
     }}
   >
     {props.children}
@@ -121,7 +272,7 @@ Notifications.setNotificationHandler({
   }),
 });
 
-/* ---------------- tiny stats helpers ---------------- */
+/* ---------------- tiny sleep helpers ---------------- */
 
 const toMinutes = (d: Date) => Math.floor(d.getTime() / 60000);
 const fromISO = (s: string) => new Date(s);
@@ -287,11 +438,18 @@ export default function App() {
     React.useState<"granted" | "denied" | "undetermined">("undetermined");
   const [nights, setNights] = React.useState<Night[]>([]);
 
+  // mood tracking state
+  const [moodEntries, setMoodEntries] = React.useState<MoodEntry[]>([]);
+  const [isMoodOverlayOpen, setIsMoodOverlayOpen] = React.useState(false);
+  const [moodScreen, setMoodScreen] =
+    React.useState<"picker" | "summary">("picker");
+
   // settings + background music state
   const [isSettingsOpen, setIsSettingsOpen] = React.useState(false);
   const [isMusicOn, setIsMusicOn] = React.useState(true); // default ON
   const [musicVolume, setMusicVolume] = React.useState(0.5);
   const musicSoundRef = React.useRef<Audio.Sound | null>(null);
+  const hasKickstartedRef = React.useRef(false);
 
   // load background music once, auto-play by default
   React.useEffect(() => {
@@ -319,11 +477,10 @@ export default function App() {
 
         musicSoundRef.current = sound;
 
-        // always try to play on mount
         try {
+          // auto-play on mount (works on native; may be blocked on web)
           await sound.playAsync();
         } catch (err) {
-          // On web, this can fail due to autoplay policy.
           console.warn("Autoplay failed (likely browser policy):", err);
         }
       } catch (e) {
@@ -341,6 +498,21 @@ export default function App() {
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // helper to force playback on first user interaction (for web autoplay blocks)
+  const kickstartAudio = React.useCallback(async () => {
+    const sound = musicSoundRef.current;
+    if (!sound || hasKickstartedRef.current) return;
+
+    try {
+      const status = await sound.getStatusAsync();
+      if (!status.isLoaded || status.isPlaying) return;
+      await sound.playAsync();
+      hasKickstartedRef.current = true;
+    } catch (e) {
+      console.warn("Kickstart audio failed:", e);
+    }
   }, []);
 
   // react to mute / volume changes
@@ -392,7 +564,7 @@ export default function App() {
 
     const baseLineStyle = {
       position: "absolute" as const,
-      width: "220%",
+      width: 1200,
       height: 1,
       backgroundColor: "rgba(248,250,252,0.12)",
     } as const;
@@ -527,7 +699,51 @@ export default function App() {
       ? "#ff7a7a"
       : "#4ade80";
 
-  /* ----- actions ----- */
+  /* ----- mood helpers ----- */
+
+  const recordMood = (key: MoodKey) => {
+    const entry: MoodEntry = {
+      id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      mood: key,
+      at: new Date().toISOString(),
+    };
+    setMoodEntries((prev) => [entry, ...prev]);
+    setMoodScreen("summary");
+  };
+
+  const moodCountsForWindow = (days: number): Record<MoodKey, number> => {
+    const now = Date.now();
+    const windowMs = days * 24 * 60 * 60 * 1000;
+    const counts = {} as Record<MoodKey, number>;
+    MOODS.forEach((m) => {
+      counts[m.key] = 0;
+    });
+
+    moodEntries.forEach((m) => {
+      const t = new Date(m.at).getTime();
+      if (now - t <= windowMs) {
+        counts[m.mood] = (counts[m.mood] || 0) + 1;
+      }
+    });
+
+    return counts;
+  };
+
+  const weeklyCounts = moodCountsForWindow(7);
+  const monthlyCounts = moodCountsForWindow(30);
+
+  const maxWeekly =
+    Math.max(
+      1,
+      ...MOODS.map((m) => weeklyCounts[m.key as MoodKey] || 0)
+    ) || 1;
+  const maxMonthly =
+    Math.max(
+      1,
+      ...MOODS.map((m) => monthlyCounts[m.key as MoodKey] || 0)
+    ) || 1;
+
+  /* ----- sleep actions ----- */
 
   const refresh = async () => {
     const raw = await readNightsRaw();
@@ -676,241 +892,317 @@ export default function App() {
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: "#0b1220" }}>
       <Bg />
-      <ScrollView
-        contentContainerStyle={{ padding: 20, paddingBottom: 40 }}
-        style={{ flex: 1 }}
-      >
-        {/* Header with title + top-right settings icon */}
-        <View
-          style={{
-            flexDirection: "row",
-            justifyContent: "space-between",
-            alignItems: "flex-start",
-            marginBottom: 10,
-          }}
-        >
-          <View style={{ flex: 1, paddingRight: 12 }}>
-            <H>
-              Sleep Regularity{"\n"}
-              <Text style={{ color: "#38bdf8" }}>Nudge Kit</Text>
-            </H>
-          </View>
 
-          <View style={{ position: "relative", alignItems: "flex-end" }}>
-            <TouchableOpacity
-              onPress={() => setIsSettingsOpen((prev) => !prev)}
+      {/* Any tap in this area will try to kickstart audio (for web autoplay) */}
+      <TouchableWithoutFeedback onPress={kickstartAudio}>
+        <View style={{ flex: 1 }}>
+          <ScrollView
+            contentContainerStyle={{ padding: 20, paddingBottom: 80 }}
+            style={{ flex: 1 }}
+          >
+            {/* Header with centered title + top-right settings icon */}
+            <View
               style={{
-                width: 36,
-                height: 36,
-                borderRadius: 18,
-                backgroundColor: "rgba(15,23,42,0.95)",
-                borderWidth: 1,
-                borderColor: "rgba(148,163,184,0.6)",
+                flexDirection: "row",
+                justifyContent: "space-between",
                 alignItems: "center",
-                justifyContent: "center",
+                marginBottom: 10,
               }}
             >
-              <Ionicons name="settings-outline" size={20} color="#9ca3af" />
+              <View style={{ flex: 1, alignItems: "center" }}>
+                <H>
+                  Sleep Regularity{"\n"}
+                  <Text style={{ color: "#38bdf8" }}>Nudge Kit</Text>
+                </H>
+              </View>
+
+              <View
+                style={{
+                  position: "absolute",
+                  right: 0,
+                  top: 6,
+                  alignItems: "flex-end",
+                }}
+              >
+                <TouchableOpacity
+                  onPress={async () => {
+                    await kickstartAudio();
+                    setIsSettingsOpen((prev) => !prev);
+                  }}
+                  style={{
+                    width: 36,
+                    height: 36,
+                    borderRadius: 18,
+                    backgroundColor: "rgba(15,23,42,0.95)",
+                    borderWidth: 1,
+                    borderColor: "rgba(148,163,184,0.6)",
+                    alignItems: "center",
+                    justifyContent: "center",
+                  }}
+                >
+                  <Ionicons name="settings-outline" size={20} color="#9ca3af" />
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            {/* explanatory text */}
+            <Text style={{ color: "#cbd5e1", marginBottom: 6 }}>
+              We use your last {BASELINE_WINDOW_DAYS} nights to compute a
+              personal baseline midsleep. If tonight drifts more than{" "}
+              {DRIFT_THRESHOLD_MIN} minutes from that baseline, we flag risk as
+              HIGH and trigger a bedtime nudge.
+            </Text>
+
+            <Text style={{ color: "#cbd5e1", marginBottom: 16 }}>
+              Notification permission:{" "}
+              <Text style={{ fontWeight: "700", color: "#e5e7eb" }}>
+                {perm}
+              </Text>{" "}
+              • Storage:{" "}
+              <Text style={{ fontWeight: "700", color: "#e5e7eb" }}>
+                {storageKind()}
+              </Text>
+            </Text>
+
+            <View
+              style={{
+                flexDirection: "row",
+                flexWrap: "wrap",
+                marginBottom: 4,
+              }}
+            >
+              <LinkButton title="Import CSV" onPress={importCsv} />
+              <LinkButton title="Seed 7 fake nights" onPress={seed7} />
+              <LinkButton title="Log on track night" onPress={logOnTrackNight} />
+              <LinkButton title="Log late night" onPress={logLateNight} />
+              <LinkButton title="Refresh" onPress={refresh} />
+            </View>
+            <View
+              style={{
+                flexDirection: "row",
+                flexWrap: "wrap",
+                marginBottom: 10,
+              }}
+            >
+              <LinkButton title="Clear data" onPress={clear} tone="danger" />
+            </View>
+
+            <Card>
+              <Text
+                style={{
+                  color: "white",
+                  fontSize: 20,
+                  fontWeight: "800",
+                  marginBottom: 8,
+                }}
+              >
+                Coverage last {BASELINE_WINDOW_DAYS} days:{" "}
+                {stats.coverage}/{BASELINE_WINDOW_DAYS}
+              </Text>
+              <Text style={{ color: "white", fontSize: 16, marginBottom: 4 }}>
+                Baseline midsleep:{" "}
+                <Text style={{ fontWeight: "700" }}>
+                  {fmtHM(stats.baselineMid)}
+                </Text>
+              </Text>
+              <Text style={{ color: "white", fontSize: 16, marginBottom: 4 }}>
+                Recent lateness (last night vs baseline): ~
+                {Math.abs(stats.recentLateness)} min
+              </Text>
+              <Text style={{ color: "white", fontSize: 16, marginBottom: 14 }}>
+                Regularity loss (sum deviation over window): ~
+                {Math.abs(stats.regularityLoss)} min
+              </Text>
+
+              <Text
+                style={{
+                  color: riskColor,
+                  fontSize: 18,
+                  fontWeight: "800",
+                  marginBottom: 12,
+                }}
+              >
+                Tonight risk: {riskLabel}
+              </Text>
+
+              <View style={{ marginBottom: 8 }}>
+                <LinkButton
+                  title="Show nudge now (with why)"
+                  onPress={fireNudgeNow}
+                />
+              </View>
+              <View style={{ marginBottom: 4 }}>
+                <LinkButton
+                  title="Schedule tonight (+60s)"
+                  onPress={scheduleTonight}
+                />
+              </View>
+            </Card>
+
+            {/* ---- history card ---- */}
+            <Card pad={false}>
+              <View style={{ padding: 16 }}>
+                <Text
+                  style={{
+                    color: "white",
+                    fontSize: 18,
+                    fontWeight: "800",
+                    marginBottom: 8,
+                  }}
+                >
+                  Recent nights
+                </Text>
+                <Text
+                  style={{ color: "#cbd5e1", marginBottom: 8, fontSize: 14 }}
+                >
+                  Most recent at the top. Nights in the last{" "}
+                  {BASELINE_WINDOW_DAYS} days form the baseline window.
+                </Text>
+              </View>
+
+              {derived.length === 0 ? (
+                <View style={{ paddingHorizontal: 16, paddingBottom: 16 }}>
+                  <Text style={{ color: "#cbd5e1" }}>
+                    No nights yet. Import a CSV, seed fake data, or log a night
+                    to see history.
+                  </Text>
+                </View>
+              ) : (
+                derived.slice(0, 21).map((n, idx) => {
+                  const isInBaseline = idx < BASELINE_WINDOW_DAYS;
+                  const lateVsBaseline =
+                    stats.baselineMid == null
+                      ? false
+                      : Math.abs(
+                          n.midsleep_min_epoch - stats.baselineMid
+                        ) >= DRIFT_THRESHOLD_MIN;
+
+                  const label =
+                    stats.baselineMid == null
+                      ? "n/a"
+                      : lateVsBaseline
+                      ? "Late vs baseline"
+                      : "On track";
+
+                  const color =
+                    stats.baselineMid == null
+                      ? "#e5e7eb"
+                      : lateVsBaseline
+                      ? "#ff7a7a"
+                      : "#4ade80";
+
+                  return (
+                    <View
+                      key={n.date + n.sleep_start}
+                      style={{
+                        paddingHorizontal: 16,
+                        paddingVertical: 10,
+                        borderTopWidth: 1,
+                        borderTopColor: "rgba(255,255,255,0.06)",
+                        flexDirection: "row",
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                      }}
+                    >
+                      <View>
+                        <Text
+                          style={{
+                            color: "white",
+                            fontWeight: "700",
+                          }}
+                        >
+                          {fmtDate(n.sleep_start)}
+                        </Text>
+                        <Text
+                          style={{
+                            color: "#cbd5e1",
+                            fontSize: 13,
+                          }}
+                        >
+                          Bed {fmtClock(n.sleep_start)} · Wake{" "}
+                          {fmtClock(n.sleep_end)}
+                        </Text>
+                      </View>
+                      <View style={{ alignItems: "flex-end" }}>
+                        <Text
+                          style={{
+                            color,
+                            fontWeight: "700",
+                            fontSize: 14,
+                          }}
+                        >
+                          {label}
+                        </Text>
+                        {isInBaseline && (
+                          <Text
+                            style={{
+                              color: "#94a3b8",
+                              fontSize: 11,
+                            }}
+                          >
+                            In baseline window
+                          </Text>
+                        )}
+                      </View>
+                    </View>
+                  );
+                })
+              )}
+            </Card>
+          </ScrollView>
+
+          {/* Floating Check-in FAB */}
+          <View
+            pointerEvents="box-none"
+            style={{
+              position: "absolute",
+              right: 24,
+              bottom: 24,
+            }}
+          >
+            <TouchableOpacity
+              activeOpacity={0.9}
+              onPress={() => {
+                setMoodScreen("picker");
+                setIsMoodOverlayOpen(true);
+              }}
+              style={{
+                paddingHorizontal: 22,
+                paddingVertical: 14,
+                borderRadius: 999,
+                backgroundColor: "#0ea5e9",
+                flexDirection: "row",
+                alignItems: "center",
+                shadowColor: "#0ea5e9",
+                shadowOpacity: 0.7,
+                shadowRadius: 20,
+                shadowOffset: { width: 0, height: 8 },
+                borderWidth: 1,
+                borderColor: "#38bdf8",
+              }}
+            >
+              <Ionicons
+                name="sparkles-outline"
+                size={18}
+                color="#e0f2fe"
+                style={{ marginRight: 8 }}
+              />
+              <Text
+                style={{
+                  color: "#e0f2fe",
+                  fontWeight: "800",
+                  fontSize: 15,
+                  letterSpacing: 0.3,
+                }}
+              >
+                Check in
+              </Text>
             </TouchableOpacity>
           </View>
         </View>
+      </TouchableWithoutFeedback>
 
-        <Text style={{ color: "#cbd5e1", marginBottom: 6 }}>
-          We use your last {BASELINE_WINDOW_DAYS} nights to compute a personal
-          baseline midsleep. If tonight drifts more than {DRIFT_THRESHOLD_MIN}{" "}
-          minutes from that baseline, we flag risk as HIGH and trigger a
-          bedtime nudge.
-        </Text>
-
-        <Text style={{ color: "#cbd5e1", marginBottom: 16 }}>
-          Notification permission:{" "}
-          <Text style={{ fontWeight: "700", color: "#e5e7eb" }}>{perm}</Text> •
-          Storage:{" "}
-          <Text style={{ fontWeight: "700", color: "#e5e7eb" }}>
-            {storageKind()}
-          </Text>
-        </Text>
-
-        <View
-          style={{
-            flexDirection: "row",
-            flexWrap: "wrap",
-            marginBottom: 4,
-          }}
-        >
-          <LinkButton title="Import CSV" onPress={importCsv} />
-          <LinkButton title="Seed 7 fake nights" onPress={seed7} />
-          <LinkButton title="Log on track night" onPress={logOnTrackNight} />
-          <LinkButton title="Log late night" onPress={logLateNight} />
-          <LinkButton title="Refresh" onPress={refresh} />
-        </View>
-        <View
-          style={{
-            flexDirection: "row",
-            flexWrap: "wrap",
-            marginBottom: 10,
-          }}
-        >
-          <LinkButton title="Clear data" onPress={clear} tone="danger" />
-        </View>
-
-        <Card>
-          <Text
-            style={{
-              color: "white",
-              fontSize: 20,
-              fontWeight: "800",
-              marginBottom: 8,
-            }}
-          >
-            Coverage last {BASELINE_WINDOW_DAYS} days:{" "}
-            {stats.coverage}/{BASELINE_WINDOW_DAYS}
-          </Text>
-          <Text style={{ color: "white", fontSize: 16, marginBottom: 4 }}>
-            Baseline midsleep:{" "}
-            <Text style={{ fontWeight: "700" }}>{fmtHM(stats.baselineMid)}</Text>
-          </Text>
-          <Text style={{ color: "white", fontSize: 16, marginBottom: 4 }}>
-            Recent lateness (last night vs baseline): ~
-            {Math.abs(stats.recentLateness)} min
-          </Text>
-          <Text style={{ color: "white", fontSize: 16, marginBottom: 14 }}>
-            Regularity loss (sum deviation over window): ~
-            {Math.abs(stats.regularityLoss)} min
-          </Text>
-
-          <Text
-            style={{
-              color: riskColor,
-              fontSize: 18,
-              fontWeight: "800",
-              marginBottom: 12,
-            }}
-          >
-            Tonight risk: {riskLabel}
-          </Text>
-
-          <View style={{ marginBottom: 8 }}>
-            <LinkButton title="Show nudge now (with why)" onPress={fireNudgeNow} />
-          </View>
-          <View style={{ marginBottom: 4 }}>
-            <LinkButton
-              title="Schedule tonight (+60s)"
-              onPress={scheduleTonight}
-            />
-          </View>
-        </Card>
-
-        {/* ---- history card ---- */}
-        <Card pad={false}>
-          <View style={{ padding: 16 }}>
-            <Text
-              style={{
-                color: "white",
-                fontSize: 18,
-                fontWeight: "800",
-                marginBottom: 8,
-              }}
-            >
-              Recent nights
-            </Text>
-            <Text style={{ color: "#cbd5e1", marginBottom: 8, fontSize: 14 }}>
-              Most recent at the top. Nights in the last {BASELINE_WINDOW_DAYS}{" "}
-              days form the baseline window.
-            </Text>
-          </View>
-
-          {derived.length === 0 ? (
-            <View style={{ paddingHorizontal: 16, paddingBottom: 16 }}>
-              <Text style={{ color: "#cbd5e1" }}>
-                No nights yet. Import a CSV, seed fake data, or log a night to
-                see history.
-              </Text>
-            </View>
-          ) : (
-            derived.slice(0, 21).map((n, idx) => {
-              const isInBaseline = idx < BASELINE_WINDOW_DAYS;
-              const lateVsBaseline =
-                stats.baselineMid == null
-                  ? false
-                  : Math.abs(
-                      n.midsleep_min_epoch - stats.baselineMid
-                    ) >= DRIFT_THRESHOLD_MIN;
-
-              const label =
-                stats.baselineMid == null
-                  ? "n/a"
-                  : lateVsBaseline
-                  ? "Late vs baseline"
-                  : "On track";
-
-              const color =
-                stats.baselineMid == null
-                  ? "#e5e7eb"
-                  : lateVsBaseline
-                  ? "#ff7a7a"
-                  : "#4ade80";
-
-              return (
-                <View
-                  key={n.date + n.sleep_start}
-                  style={{
-                    paddingHorizontal: 16,
-                    paddingVertical: 10,
-                    borderTopWidth: 1,
-                    borderTopColor: "rgba(255,255,255,0.06)",
-                    flexDirection: "row",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                  }}
-                >
-                  <View>
-                    <Text
-                      style={{
-                        color: "white",
-                        fontWeight: "700",
-                      }}
-                    >
-                      {fmtDate(n.sleep_start)}
-                    </Text>
-                    <Text
-                      style={{
-                        color: "#cbd5e1",
-                        fontSize: 13,
-                      }}
-                    >
-                      Bed {fmtClock(n.sleep_start)} · Wake{" "}
-                      {fmtClock(n.sleep_end)}
-                    </Text>
-                  </View>
-                  <View style={{ alignItems: "flex-end" }}>
-                    <Text
-                      style={{
-                        color,
-                        fontWeight: "700",
-                        fontSize: 14,
-                      }}
-                    >
-                      {label}
-                    </Text>
-                    {isInBaseline && (
-                      <Text
-                        style={{
-                          color: "#94a3b8",
-                          fontSize: 11,
-                        }}
-                      >
-                        In baseline window
-                      </Text>
-                    )}
-                  </View>
-                </View>
-              );
-            })
-          )}
-        </Card>
-      </ScrollView>
-
+      {/* Settings overlay */}
       {isSettingsOpen && (
         <View
           style={{
@@ -1049,7 +1341,7 @@ export default function App() {
             </Text>
 
             <Slider
-              style={{ width: "100%", height: 32 }}
+              style={{ alignSelf: "stretch", height: 32 }}
               minimumValue={0}
               maximumValue={1}
               value={musicVolume}
@@ -1062,6 +1354,376 @@ export default function App() {
               thumbTintColor="#e5e7eb"
             />
           </View>
+        </View>
+      )}
+
+      {/* Mood check-in overlay (picker + summary) */}
+      {isMoodOverlayOpen && (
+        <View
+          style={{
+            position: "absolute",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: "#020617",
+            zIndex: 60,
+          }}
+        >
+          <SafeAreaView style={{ flex: 1 }}>
+            {/* top bar with summary/back + X */}
+            <View
+              style={{
+                flexDirection: "row",
+                justifyContent: "space-between",
+                alignItems: "center",
+                paddingHorizontal: 18,
+                paddingTop: 8,
+              }}
+            >
+              <TouchableOpacity
+                onPress={() =>
+                  setMoodScreen((prev) =>
+                    prev === "picker" ? "summary" : "picker"
+                  )
+                }
+                style={{
+                  paddingHorizontal: 12,
+                  paddingVertical: 6,
+                  borderRadius: 999,
+                  borderWidth: 1,
+                  borderColor: "#38bdf8",
+                  backgroundColor: "rgba(15,23,42,0.9)",
+                }}
+              >
+                <Text
+                  style={{
+                    color: "#e5e7eb",
+                    fontSize: 12,
+                    fontWeight: "600",
+                  }}
+                >
+                  {moodScreen === "picker"
+                    ? "Mood check-ins summary"
+                    : "Back to check-in"}
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                onPress={() => setIsMoodOverlayOpen(false)}
+                style={{
+                  width: 32,
+                  height: 32,
+                  borderRadius: 16,
+                  backgroundColor: "rgba(15,23,42,0.9)",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  borderWidth: 1,
+                  borderColor: "rgba(148,163,184,0.7)",
+                }}
+              >
+                <Ionicons name="close" size={18} color="#e5e7eb" />
+              </TouchableOpacity>
+            </View>
+
+            {moodScreen === "picker" ? (
+              // ---- mood picker screen ----
+              <View
+                style={{
+                  flex: 1,
+                  paddingHorizontal: 24,
+                  paddingBottom: 24,
+                }}
+              >
+                <ScrollView
+                  contentContainerStyle={{
+                    alignItems: "center",
+                    paddingVertical: 24,
+                  }}
+                >
+                  <Text
+                    style={{
+                      color: "#e5e7eb",
+                      fontSize: 18,
+                      fontWeight: "700",
+                      marginBottom: 6,
+                      textAlign: "center",
+                    }}
+                  >
+                    How are you feeling right now?
+                  </Text>
+                  <Text
+                    style={{
+                      color: "#94a3b8",
+                      fontSize: 13,
+                      marginBottom: 26,
+                      textAlign: "center",
+                    }}
+                  >
+                    Tap a bubble to log your mood. We’ll track your weekly and
+                    monthly patterns.
+                  </Text>
+
+                  <View
+                    style={{
+                      flexDirection: "row",
+                      flexWrap: "wrap",
+                      justifyContent: "center",
+                    }}
+                  >
+                    {MOODS.map((m) => (
+                      <TouchableOpacity
+                        key={m.key}
+                        onPress={() => recordMood(m.key)}
+                        activeOpacity={0.9}
+                        style={{
+                          width: 120,
+                          height: 120,
+                          borderRadius: 60,
+                          margin: 9,
+                          alignItems: "center",
+                          justifyContent: "center",
+                          shadowColor: m.color,
+                          shadowOpacity: 0.7,
+                          shadowRadius: 18,
+                          shadowOffset: { width: 0, height: 8 },
+                          backgroundColor: m.glow,
+                        }}
+                      >
+                        <View
+                          style={{
+                            width: 108,
+                            height: 108,
+                            borderRadius: 54,
+                            backgroundColor: "#020617",
+                            borderWidth: 2,
+                            borderColor: m.color,
+                            alignItems: "center",
+                            justifyContent: "center",
+                          }}
+                        >
+                          <Text
+                            style={{
+                              color: "#e5e7eb",
+                              fontSize: 14,
+                              fontWeight: "700",
+                              marginBottom: 4,
+                              textAlign: "center",
+                            }}
+                          >
+                            {m.title}
+                          </Text>
+                          <Text
+                            style={{
+                              color: "#cbd5e1",
+                              fontSize: 10,
+                              textAlign: "center",
+                            }}
+                          >
+                            {m.subtitle}
+                          </Text>
+                        </View>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                </ScrollView>
+              </View>
+            ) : (
+              // ---- mood summary screen ----
+              <View
+                style={{
+                  flex: 1,
+                  paddingHorizontal: 24,
+                  paddingBottom: 24,
+                }}
+              >
+                <ScrollView
+                  contentContainerStyle={{
+                    paddingVertical: 24,
+                  }}
+                >
+                  <Text
+                    style={{
+                      color: "#e5e7eb",
+                      fontSize: 18,
+                      fontWeight: "700",
+                      marginBottom: 6,
+                      textAlign: "center",
+                    }}
+                  >
+                    Mood summary
+                  </Text>
+                  <Text
+                    style={{
+                      color: "#94a3b8",
+                      fontSize: 13,
+                      marginBottom: 20,
+                      textAlign: "center",
+                    }}
+                  >
+                    Based on your recent check-ins.
+                  </Text>
+
+                  {moodEntries.length === 0 ? (
+                    <Text
+                      style={{
+                        color: "#cbd5e1",
+                        fontSize: 14,
+                        textAlign: "center",
+                      }}
+                    >
+                      No check-ins yet. Go back and log how you feel to see your
+                      weekly and monthly mood patterns.
+                    </Text>
+                  ) : (
+                    <>
+                      <Text
+                        style={{
+                          color: "#94a3b8",
+                          fontSize: 13,
+                          marginBottom: 8,
+                        }}
+                      >
+                        This week
+                      </Text>
+                      {MOODS.map((m) => {
+                        const count = weeklyCounts[m.key];
+                        const widthPct = (count / maxWeekly) * 100 || 0;
+                        return (
+                          <View
+                            key={`week-${m.key}`}
+                            style={{
+                              flexDirection: "row",
+                              alignItems: "center",
+                              marginBottom: 6,
+                            }}
+                          >
+                            <View
+                              style={{
+                                width: 10,
+                                height: 10,
+                                borderRadius: 5,
+                                backgroundColor: m.color,
+                                marginRight: 8,
+                              }}
+                            />
+                            <Text
+                              style={{
+                                color: "#e5e7eb",
+                                fontSize: 13,
+                                width: 120,
+                              }}
+                            >
+                              {m.title}
+                            </Text>
+                            <View
+                              style={{
+                                flex: 1,
+                                height: 9,
+                                borderRadius: 999,
+                                backgroundColor: "#020617",
+                                overflow: "hidden",
+                                marginHorizontal: 8,
+                              }}
+                            >
+                              <View
+                                style={{
+                                  width: `${widthPct}%`,
+                                  height: "100%",
+                                  backgroundColor: m.color,
+                                  opacity: 0.9,
+                                }}
+                              />
+                            </View>
+                            <Text
+                              style={{
+                                color: "#e5e7eb",
+                                fontSize: 12,
+                              }}
+                            >
+                              {count}
+                            </Text>
+                          </View>
+                        );
+                      })}
+
+                      <View style={{ height: 18 }} />
+
+                      <Text
+                        style={{
+                          color: "#94a3b8",
+                          fontSize: 13,
+                          marginBottom: 8,
+                        }}
+                      >
+                        This month
+                      </Text>
+                      {MOODS.map((m) => {
+                        const count = monthlyCounts[m.key];
+                        const widthPct = (count / maxMonthly) * 100 || 0;
+                        return (
+                          <View
+                            key={`month-${m.key}`}
+                            style={{
+                              flexDirection: "row",
+                              alignItems: "center",
+                              marginBottom: 6,
+                            }}
+                          >
+                            <View
+                              style={{
+                                width: 10,
+                                height: 10,
+                                borderRadius: 5,
+                                backgroundColor: m.color,
+                                marginRight: 8,
+                              }}
+                            />
+                            <Text
+                              style={{
+                                color: "#e5e7eb",
+                                fontSize: 13,
+                                width: 120,
+                              }}
+                            >
+                              {m.title}
+                            </Text>
+                            <View
+                              style={{
+                                flex: 1,
+                                height: 9,
+                                borderRadius: 999,
+                                backgroundColor: "#020617",
+                                overflow: "hidden",
+                                marginHorizontal: 8,
+                              }}
+                            >
+                              <View
+                                style={{
+                                  width: `${widthPct}%`,
+                                  height: "100%",
+                                  backgroundColor: m.color,
+                                  opacity: 0.9,
+                                }}
+                              />
+                            </View>
+                            <Text
+                              style={{
+                                color: "#e5e7eb",
+                                fontSize: 12,
+                              }}
+                            >
+                              {count}
+                            </Text>
+                          </View>
+                        );
+                      })}
+                    </>
+                  )}
+                </ScrollView>
+              </View>
+            )}
+          </SafeAreaView>
         </View>
       )}
     </SafeAreaView>
