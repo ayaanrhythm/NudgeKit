@@ -5,6 +5,8 @@ export type Night = {
   date: string;          // YYYY-MM-DD
   sleep_start: string;   // ISO 8601
   sleep_end: string;     // ISO 8601
+  id?: string;
+  source?: "csv" | "seed" | "manual_late" | "manual_on_time";
 };
 
 export type DerivedNight = Night & {

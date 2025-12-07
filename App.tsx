@@ -180,6 +180,7 @@ const MOODS: MoodMeta[] = [
 const SOOTHING_TRACK = require("./assets/nudgekitbackgroundmusic.mp3");
 const BASELINE_WINDOW_DAYS = 7;
 const DRIFT_THRESHOLD_MIN = 90; // 90+ min away from baseline = high risk
+const DRIFT_THRESHOLD_HOURS = DRIFT_THRESHOLD_MIN / 60;
 
 /* ---------------- UI helpers ---------------- */
 
@@ -263,13 +264,14 @@ const Card: React.FC<{ children: React.ReactNode; pad?: boolean }> = ({
 /* ---------------- notifications ---------------- */
 
 Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowAlert: true,
-    shouldPlaySound: false,
-    shouldSetBadge: false,
-    shouldShowBanner: true as any,
-    shouldShowList: true as any,
-  }),
+  handleNotification: async () =>
+    ({
+      shouldShowAlert: true,
+      shouldPlaySound: false,
+      shouldSetBadge: false,
+      shouldShowBanner: true,
+      shouldShowList: true,
+    } as any),
 });
 
 /* ---------------- tiny sleep helpers ---------------- */
@@ -284,6 +286,14 @@ const fmtHM = (m: number | null) => {
   const ampm = h24 >= 12 ? "PM" : "AM";
   const h = ((h24 + 11) % 12) + 1;
   return `${h}:${mm.toString().padStart(2, "0")} ${ampm}`;
+};
+
+const fmtMinutesAsHours = (m: number | null) => {
+  if (m == null) return "n/a";
+  const hours = m / 60;
+  const absHours = Math.abs(hours);
+  const rounded = Math.round(absHours * 10) / 10;
+  return `${rounded.toFixed(1)} h`;
 };
 
 const fmtDate = (iso: string) => new Date(iso).toLocaleDateString();
@@ -437,6 +447,12 @@ export default function App() {
   const [perm, setPerm] =
     React.useState<"granted" | "denied" | "undetermined">("undetermined");
   const [nights, setNights] = React.useState<Night[]>([]);
+  const [lastNudgePreview, setLastNudgePreview] =
+    React.useState<string | null>(null);
+  const [activeNudge, setActiveNudge] = React.useState<{
+    title: string;
+    body: string;
+  } | null>(null);
 
   // mood tracking state
   const [moodEntries, setMoodEntries] = React.useState<MoodEntry[]>([]);
@@ -478,7 +494,7 @@ export default function App() {
         musicSoundRef.current = sound;
 
         try {
-          // auto-play on mount (works on native; may be blocked on web)
+          // auto-play on mount (works on native, may be blocked on web)
           await sound.playAsync();
         } catch (err) {
           console.warn("Autoplay failed (likely browser policy):", err);
@@ -500,22 +516,7 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // helper to force playback on first user interaction (for web autoplay blocks)
-  const kickstartAudio = React.useCallback(async () => {
-    const sound = musicSoundRef.current;
-    if (!sound || hasKickstartedRef.current) return;
-
-    try {
-      const status = await sound.getStatusAsync();
-      if (!status.isLoaded || status.isPlaying) return;
-      await sound.playAsync();
-      hasKickstartedRef.current = true;
-    } catch (e) {
-      console.warn("Kickstart audio failed:", e);
-    }
-  }, []);
-
-  // react to mute / volume changes
+  // react to isMusicOn / musicVolume changes
   React.useEffect(() => {
     const sound = musicSoundRef.current;
     if (!sound) return;
@@ -523,19 +524,40 @@ export default function App() {
     (async () => {
       try {
         await sound.setVolumeAsync(musicVolume);
-        const status = await sound.getStatusAsync();
-        if (!status.isLoaded) return;
 
-        if (isMusicOn && !status.isPlaying) {
+        const status = await sound.getStatusAsync();
+        if (!status.isLoaded) {
+          return;
+        }
+
+        const isPlaying = !!status.isPlaying;
+
+        if (isMusicOn && !isPlaying) {
           await sound.playAsync();
-        } else if (!isMusicOn && status.isPlaying) {
+        } else if (!isMusicOn && isPlaying) {
           await sound.pauseAsync();
         }
       } catch (e) {
-        console.warn("Error updating background sound", e);
+        console.warn("Updating background audio failed:", e);
       }
     })();
   }, [isMusicOn, musicVolume]);
+
+  // helper to force playback on first user interaction (for web autoplay blocks)
+  const kickstartAudio = React.useCallback(async () => {
+    const sound = musicSoundRef.current;
+    if (!sound || hasKickstartedRef.current) return;
+
+    try {
+      const status = await sound.getStatusAsync();
+      if (!status.isLoaded) return;
+      if (status.isPlaying) return;
+      await sound.playAsync();
+      hasKickstartedRef.current = true;
+    } catch (e) {
+      console.warn("Kickstart audio failed:", e);
+    }
+  }, []);
 
   // animated, subtle moving background
   const Bg: React.FC = () => {
@@ -681,7 +703,7 @@ export default function App() {
 
   const derived: DerivedNight[] = nights
     .map(derive)
-    .sort((a, b) => (a.sleep_start < b.sleep_start ? 1 : -1)); // most recent first
+    .sort((a, b) => b.midsleep_min_epoch - a.midsleep_min_epoch); // most recent first
 
   const stats = summarize(derived);
 
@@ -693,11 +715,7 @@ export default function App() {
       : "LOW";
 
   const riskColor =
-    stats.coverage < 3
-      ? "#e5e7eb"
-      : stats.drift
-      ? "#ff7a7a"
-      : "#4ade80";
+    stats.coverage < 3 ? "#e5e7eb" : stats.drift ? "#ff7a7a" : "#4ade80";
 
   /* ----- mood helpers ----- */
 
@@ -765,8 +783,17 @@ export default function App() {
   };
 
   const clear = async () => {
-    await clearAll();
-    await refresh();
+    try {
+      // clear the nights list in storage
+      await writeNightsRaw([]);
+      // and run the broader clear in case storage has other keys
+      await clearAll();
+    } finally {
+      // reset local state so the UI empties
+      setNights([]);
+      setLastNudgePreview(null);
+      setActiveNudge(null);
+    }
   };
 
   const importCsv = async () => {
@@ -816,52 +843,89 @@ export default function App() {
 
   const logLateNight = async () => {
     const mid = stats.baselineMid ?? toMinutes(new Date()) + 4 * 60;
-    const night = nightFromMidsleep(mid, 120); // 2 hours later
+    const night = nightFromMidsleep(mid + 3 * 60, 0); // 3 hours later
     await appendNight(night);
   };
 
-  const fireNudgeNow = React.useCallback(async () => {
-    if (stats.coverage < 3) {
+  const fireNudgeNow = async () => {
+    const enoughData = stats.coverage >= 3;
+    const baselineDescription =
+      stats.baselineMid != null
+        ? fmtHM(stats.baselineMid)
+        : "your usual sleep midpoint once we have a few nights logged";
+
+    const title = enoughData
+      ? stats.drift
+        ? "Tonight looks later than usual"
+        : "Nice job staying on track"
+      : "Example bedtime nudge";
+
+    const body = enoughData
+      ? stats.drift
+        ? `Your sleep midpoint tonight is drifting later than your usual midpoint at ${baselineDescription}. Try starting your wind down a bit earlier to protect your regular schedule.`
+        : `You are staying close to your usual sleep midpoint at ${baselineDescription}. Keeping this pattern helps your body clock stay steady.`
+      : "Once we have at least 3 recent nights, we will compare tonight to your usual sleep midpoint and send you this kind of nudge if you are drifting later.";
+
+    // In-app preview (works everywhere, including web)
+    setActiveNudge({ title, body });
+
+    // Native notification only when on device, with permission, and enough data
+    if (Platform.OS !== "web" && perm === "granted" && enoughData) {
+      await Notifications.scheduleNotificationAsync({
+        content: {
+          title,
+          body,
+        },
+        trigger: null,
+      });
+    } else if (Platform.OS !== "web" && perm !== "granted") {
       Alert.alert(
-        "Not enough data",
-        "We need at least 3 recent nights to decide whether to fire a nudge."
+        "Notifications disabled",
+        "We cannot show a native notification because permission is not granted. The in-app nudge preview is still shown for demo."
       );
-      return;
     }
-    if (Platform.OS === "web") {
-      Alert.alert(
-        "Notifications not available on web",
-        "On phones this would appear as a push notification. Here we just show the content in the UI."
-      );
-      return;
-    }
-    const why = stats.drift ? "Bedtime drift detected" : "No drift tonight";
-    await Notifications.scheduleNotificationAsync({
-      content: {
-        title: stats.drift ? "Heads up" : "No drift tonight",
-        body: `${why}. Baseline ${fmtHM(stats.baselineMid)}.`,
-      },
-      trigger: null,
+  };
+
+  // schedule a 1-minute demo notification
+  const scheduleDemoNudge = async () => {
+    const baselineDescription =
+      stats.baselineMid != null
+        ? fmtHM(stats.baselineMid)
+        : "your usual sleep midpoint once we have more data";
+
+    const now = new Date();
+    const target = new Date(now.getTime() + 60 * 1000);
+
+    const title = stats.drift
+      ? "Bedtime nudge (demo)"
+      : "Steady schedule (demo)";
+
+    // Always show an immediate in-app explanation
+    setActiveNudge({
+      title,
+      body:
+        Platform.OS === "web"
+          ? `We would send this bedtime nudge about a minute from now. In a real deployment it would go near your usual sleep midpoint at ${baselineDescription}.`
+          : `We just scheduled a bedtime nudge for about a minute from now (around ${target.toLocaleTimeString(
+              [],
+              { hour: "2-digit", minute: "2-digit" }
+            )}). In a real deployment it would go closer to your usual sleep midpoint at ${baselineDescription}.`,
     });
-  }, [stats]);
 
-  const scheduleTonight = React.useCallback(async () => {
-    if (stats.coverage < 3) {
-      Alert.alert(
-        "Not enough data",
-        "We need at least 3 recent nights before scheduling a bedtime nudge."
-      );
-      return;
-    }
     if (Platform.OS === "web") {
-      Alert.alert(
-        "Notifications not available on web",
-        "For the real study this nudge would be scheduled on a phone."
+      setLastNudgePreview(
+        `Demo only: a bedtime nudge would be scheduled for about one minute from now, aligned with your usual midpoint at ${baselineDescription}.`
       );
       return;
     }
 
-    const target = new Date(Date.now() + 60 * 1000);
+    if (perm !== "granted") {
+      Alert.alert(
+        "Notifications disabled",
+        "We could not schedule a native notification because permission is not granted. The in-app preview above shows what it would look like."
+      );
+      return;
+    }
 
     const trigger: Notifications.DateTriggerInput = {
       type: Notifications.SchedulableTriggerInputTypes.DATE,
@@ -870,24 +934,36 @@ export default function App() {
 
     await Notifications.scheduleNotificationAsync({
       content: {
-        title: stats.drift ? "Bedtime nudge" : "No drift tonight",
+        title,
         body: stats.drift
-          ? "You are trending late tonight. Consider starting wind down."
-          : "Looking steady. Nice work keeping a regular schedule.",
+          ? `You are trending later tonight compared with your usual midpoint at ${baselineDescription}. Consider starting your wind down a bit earlier.`
+          : `You are staying close to your usual sleep midpoint at ${baselineDescription}. Keeping this pattern helps your body clock stay steady.`,
       },
       trigger,
     });
 
     Alert.alert(
-      "Scheduled",
-      `Nudge set for ${target.toLocaleTimeString([], {
+      "Demo scheduled",
+      `Bedtime nudge scheduled for ${target.toLocaleTimeString([], {
         hour: "2-digit",
         minute: "2-digit",
       })}.`
     );
-  }, [stats]);
+  };
 
   /* ----- render ----- */
+
+  const prettyPerm =
+    perm ? perm.charAt(0).toUpperCase() + perm.slice(1) : "";
+
+  const storageRaw = storageKind();
+  const prettyStorage =
+    storageRaw ? storageRaw.charAt(0).toUpperCase() + storageRaw.slice(1) : "";
+
+  const recentLatenessMinutes =
+    stats.coverage > 0 ? stats.recentLateness : null;
+  const regularityLossMinutes =
+    stats.coverage > 0 ? stats.regularityLoss : null;
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: "#0b1220" }}>
@@ -949,18 +1025,18 @@ export default function App() {
             <Text style={{ color: "#cbd5e1", marginBottom: 6 }}>
               We use your last {BASELINE_WINDOW_DAYS} nights to compute a
               personal baseline midsleep. If tonight drifts more than{" "}
-              {DRIFT_THRESHOLD_MIN} minutes from that baseline, we flag risk as
-              HIGH and trigger a bedtime nudge.
+              {DRIFT_THRESHOLD_HOURS.toFixed(1)} hours from that baseline, we
+              flag risk as HIGH and trigger a bedtime nudge.
             </Text>
 
             <Text style={{ color: "#cbd5e1", marginBottom: 16 }}>
               Notification permission:{" "}
               <Text style={{ fontWeight: "700", color: "#e5e7eb" }}>
-                {perm}
+                {prettyPerm}
               </Text>{" "}
               • Storage:{" "}
               <Text style={{ fontWeight: "700", color: "#e5e7eb" }}>
-                {storageKind()}
+                {prettyStorage}
               </Text>
             </Text>
 
@@ -972,11 +1048,21 @@ export default function App() {
               }}
             >
               <LinkButton title="Import CSV" onPress={importCsv} />
-              <LinkButton title="Seed 7 fake nights" onPress={seed7} />
-              <LinkButton title="Log on track night" onPress={logOnTrackNight} />
-              <LinkButton title="Log late night" onPress={logLateNight} />
-              <LinkButton title="Refresh" onPress={refresh} />
+              <LinkButton title="Seed demo nights" onPress={seed7} />
+              <LinkButton title="Add on-time night" onPress={logOnTrackNight} />
+              <LinkButton title="Add late night" onPress={logLateNight} />
             </View>
+            <Text
+              style={{
+                color: "#94a3b8",
+                marginBottom: 10,
+                fontSize: 13,
+              }}
+            >
+              The on-time and late buttons add synthetic nights. They are for
+              demos so you can show how the nudge logic reacts without real
+              tracker data.
+            </Text>
             <View
               style={{
                 flexDirection: "row",
@@ -1007,12 +1093,44 @@ export default function App() {
               </Text>
               <Text style={{ color: "white", fontSize: 16, marginBottom: 4 }}>
                 Recent lateness (last night vs baseline): ~
-                {Math.abs(stats.recentLateness)} min
+                {fmtMinutesAsHours(recentLatenessMinutes)}
               </Text>
-              <Text style={{ color: "white", fontSize: 16, marginBottom: 14 }}>
+              <Text style={{ color: "white", fontSize: 16, marginBottom: 10 }}>
                 Regularity loss (sum deviation over window): ~
-                {Math.abs(stats.regularityLoss)} min
+                {fmtMinutesAsHours(regularityLossMinutes)}
               </Text>
+
+              <View style={{ marginBottom: 10 }}>
+                <Text
+                  style={{
+                    color: "#94a3b8",
+                    fontSize: 13,
+                    marginBottom: 2,
+                  }}
+                >
+                  Baseline midsleep is the midpoint of your usual sleep over the
+                  last {BASELINE_WINDOW_DAYS} nights.
+                </Text>
+                <Text
+                  style={{
+                    color: "#94a3b8",
+                    fontSize: 13,
+                    marginBottom: 2,
+                  }}
+                >
+                  Recent lateness shows how many hours last night was away from
+                  that midpoint.
+                </Text>
+                <Text
+                  style={{
+                    color: "#94a3b8",
+                    fontSize: 13,
+                  }}
+                >
+                  Regularity loss is the total number of hours all recent nights
+                  have drifted away from your baseline.
+                </Text>
+              </View>
 
               <Text
                 style={{
@@ -1027,16 +1145,33 @@ export default function App() {
 
               <View style={{ marginBottom: 8 }}>
                 <LinkButton
-                  title="Show nudge now (with why)"
+                  title="Preview tonight's nudge"
                   onPress={fireNudgeNow}
                 />
               </View>
               <View style={{ marginBottom: 4 }}>
                 <LinkButton
-                  title="Schedule tonight (+60s)"
-                  onPress={scheduleTonight}
+                  title="Schedule 1-min demo nudge"
+                  onPress={scheduleDemoNudge}
                 />
               </View>
+              {lastNudgePreview && (
+                <View
+                  style={{
+                    marginTop: 8,
+                    paddingHorizontal: 12,
+                    paddingVertical: 10,
+                    borderRadius: 12,
+                    backgroundColor: "rgba(15,23,42,0.7)",
+                    borderWidth: 1,
+                    borderColor: "rgba(148,163,184,0.5)",
+                  }}
+                >
+                  <Text style={{ color: "#e5e7eb", fontSize: 14 }}>
+                    {lastNudgePreview}
+                  </Text>
+                </View>
+              )}
             </Card>
 
             {/* ---- history card ---- */}
@@ -1063,7 +1198,7 @@ export default function App() {
               {derived.length === 0 ? (
                 <View style={{ paddingHorizontal: 16, paddingBottom: 16 }}>
                   <Text style={{ color: "#cbd5e1" }}>
-                    No nights yet. Import a CSV, seed fake data, or log a night
+                    No nights yet. Import a CSV, seed demo data, or add a night
                     to see history.
                   </Text>
                 </View>
@@ -1460,7 +1595,7 @@ export default function App() {
                       textAlign: "center",
                     }}
                   >
-                    Tap a bubble to log your mood. We’ll track your weekly and
+                    Tap a bubble to log your mood. We will track your weekly and
                     monthly patterns.
                   </Text>
 
@@ -1724,6 +1859,78 @@ export default function App() {
               </View>
             )}
           </SafeAreaView>
+        </View>
+      )}
+
+      {/* Nudge overlay card (for web and demo) */}
+      {activeNudge && (
+        <View
+          style={{
+            position: "absolute",
+            top: 40,
+            left: 20,
+            right: 20,
+            zIndex: 70,
+          }}
+        >
+          <View
+            style={{
+              borderRadius: 18,
+              padding: 16,
+              backgroundColor: "#020617",
+              borderWidth: 1,
+              borderColor: stats.drift ? "#f97373" : "#22c55e",
+              shadowColor: "#000",
+              shadowOpacity: 0.8,
+              shadowRadius: 18,
+              shadowOffset: { width: 0, height: 10 },
+            }}
+          >
+            <View
+              style={{
+                flexDirection: "row",
+                justifyContent: "space-between",
+                alignItems: "flex-start",
+              }}
+            >
+              <Text
+                style={{
+                  color: "#e5e7eb",
+                  fontSize: 16,
+                  fontWeight: "700",
+                  flex: 1,
+                  marginRight: 8,
+                }}
+              >
+                {activeNudge.title}
+              </Text>
+              <TouchableOpacity
+                onPress={() => setActiveNudge(null)}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <Ionicons name="close" size={18} color="#9ca3af" />
+              </TouchableOpacity>
+            </View>
+            <Text
+              style={{
+                color: "#cbd5e1",
+                fontSize: 14,
+                marginTop: 8,
+              }}
+            >
+              {activeNudge.body}
+            </Text>
+            <Text
+              style={{
+                color: "#64748b",
+                fontSize: 12,
+                marginTop: 10,
+              }}
+            >
+              This is a preview of the push notification we would send near your
+              bedtime. On phones it appears as a native notification.
+            </Text>
+          </View>
         </View>
       )}
     </SafeAreaView>
