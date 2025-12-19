@@ -4,15 +4,17 @@ A small React Native / Expo app that demos a sleep-regularity nudge based on rec
 
 1. Prerequisites
 
-Node.js (recent LTS is fine)
+Windows / macOS: Node.js (recent LTS is fine). Download the LTS installer from https://nodejs.org (choose “LTS”). Run the installer using default settings. 
 
 npm (comes with Node)
 
 Expo CLI (you can use npx expo so no global install is required)
 
-2. Install
+2. To Install
 
-From the project root:
+bash
+git clone https://github.com/ayaanrhythm/NudgeKit.git
+cd NudgeKit
 
 # Install dependencies
 npm install
