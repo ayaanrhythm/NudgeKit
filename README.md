@@ -1,4 +1,4 @@
-Sleep Regularity Nudge Kit – Run Guide
+# Sleep Regularity Nudge Kit – Run Guide
 
 A small React Native / Expo app that demos a sleep-regularity nudge based on recent midsleep times.
 
@@ -32,7 +32,7 @@ npx expo start
 
 Expo will open a browser window with the Metro bundler.
 
-You have two easy options:
+There are two easy options:
 
 Run in a web browser
 
