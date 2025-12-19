@@ -14,7 +14,7 @@ Expo CLI (you can use npx expo so no global install is required)
 
 From the project root:
 
-# install dependencies
+# Install dependencies
 npm install
 
 
